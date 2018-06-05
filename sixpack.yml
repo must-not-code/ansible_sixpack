@@ -1,0 +1,120 @@
+- name: Install Sixpack
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  pre_tasks:
+    - name: Install python for Ansible
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+      register: output
+      changed_when: output.stdout != ""
+
+  tasks:
+    - name: Upgrade OS
+      apt:
+        upgrade: dist
+        update_cache: yes
+
+    - name: Add redis repository
+      apt_repository:
+        repo: 'ppa:chris-lea/redis-server'
+        update_cache: yes
+
+    - name: Install Packages
+      apt: pkg={{item}} state=latest
+      with_items:
+        - redis-server
+        - python-dev
+        - python-pip
+        - python-software-properties
+        - apache2-utils
+        - supervisor
+        - logrotate
+        - nginx
+        - git
+
+    - name: Install Sixpack
+      pip:
+        name: 'git+https://github.com/seatgeek/sixpack.git#egg=sixpack'
+        editable: false
+
+    - name: Create directory for Sixpack logs
+      file: path=/var/log/sixpack state=directory
+
+    - name: Create directory for Sixpack config
+      file: path=/etc/sixpack state=directory
+
+    - name: Generate Sixpackweb secret key
+      shell: 'openssl rand -base64 24 | sed "s/[+=\/:]//g"'
+      register: secret_key
+
+    - name: Create Sixpack config
+      template:
+        src: templates/sixpack.conf
+        dest: /etc/sixpack/sixpack.conf
+
+    - name: Create Sixpack config for supervisor
+      template:
+        src: templates/supervisor_sixpack.conf
+        dest: /etc/supervisor/conf.d/sixpack.conf
+
+    - name: Create Sixpackweb config for supervisor
+      template:
+        src: templates/supervisor_sixpackweb.conf
+        dest: /etc/supervisor/conf.d/sixpackweb.conf
+
+    - name: Restart supervisor
+      service: name=supervisor state=restarted
+
+    - name: Supervisorctl read Sixpack config
+      shell: 'supervisorctl reread'
+
+    - name: Supervisorctl update configs
+      shell: 'supervisorctl update'
+
+    - name: Supervisorctl start servers
+      shell: 'supervisorctl start all'
+
+    - name: Replace the default nginx configuration
+      template:
+        src: templates/nginx.conf
+        dest: /etc/nginx/nginx.conf
+
+    - name: Set new password for Sixpack
+      shell: 'htpasswd -bc /etc/nginx/.htpasswd sixpack {{sixpack_password}}'
+
+    - name: Set new password for Sixpackweb
+      shell: 'htpasswd -b /etc/nginx/.htpasswd sixpackweb {{sixpack_password}}'
+
+    - name: Create host configuration for Sixpack server
+      template:
+        src: templates/nginx_sixpack.conf
+        dest: /etc/nginx/sites-available/sixpack
+
+    - name: Create host configuration for Sixpackweb server
+      template:
+        src: templates/nginx_sixpackweb.conf
+        dest: /etc/nginx/sites-available/sixpackweb
+
+    - name: Create symbolic link to Sixpack
+      file:
+        src: /etc/nginx/sites-available/sixpack
+        dest: /etc/nginx/sites-enabled/sixpack
+        state: link
+
+    - name: Create symbolic link to Sixpackweb
+      file:
+        src: /etc/nginx/sites-available/sixpackweb
+        dest: /etc/nginx/sites-enabled/sixpackweb
+        state: link
+
+    - name: Remove default nginx virtual host
+      file: path=/etc/nginx/sites-enabled/default state=absent
+
+    - name: Restart nginx
+      service: name=nginx state=restarted
+
+    - name: Create logrotate config
+      template:
+        src: templates/logrotate.conf
+        dest: /etc/logrotate.d/sixpack
